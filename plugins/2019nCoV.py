@@ -1,23 +1,28 @@
+import datetime
+import nonebot
 import requests
 import json
+import os
+import pytz
 from nonebot import on_command, CommandSession
 from bs4 import BeautifulSoup
+
+
+provinces = ['河北', '山西', '黑龙江', '吉林', '辽宁省', '陕西', '甘肃', '青海', '山东', '河南', '江苏', '浙江', '安徽', '江西',
+             '福建', '台湾', '湖北', '湖南', '广东', '海南', '四川', '云南', '贵州', '香港', '澳门', '北京', '上海', '重庆',
+             '深圳', '新疆', '西藏', '宁夏', '内蒙古', '广西']
 
 
 @on_command('疫情', shell_like=True)  # 命令处理
 async def nCoV(session):
     area = session.get('area')  # 获取命令参数
-
-    if area in ['全国', '中国']:
-        result = await get_tencent_result(area)  # 全国数据来自腾讯新闻
-    else:
-        result = await get_dxy_result(area)  # 省市级数据来自丁香园
+    result = await get_tencent_result(area)  # 全部数据来自腾讯网
 
     if result:
         if area in ['全国', '中国']:
-            formated_result = await format_result_tencent(result)
+            formated_result = await format_result_tencent_cn(result)
         else:
-            formated_result = await format_result_dxy(result)
+            formated_result = await format_result_tencent(result)
     else:
         formated_result = "未查询到%s的信息" % area
     if formated_result:
@@ -35,88 +40,94 @@ async def _(session: CommandSession):
 
 
 async def get_tencent_result(area):
-    """
-    通过腾讯新闻api获取area地区数据
-    :param area: 地区名
-    :return: none或包含数据的字典
-    """
     result = None
-    url = 'https://view.inews.qq.com/g2/getOnsInfo?name=wuwei_ww_global_vars'
-    r = requests.get(url)
-    result = json.loads(json.loads(r.text)['data'])[0]
+    url = 'https://view.inews.qq.com/g2/getOnsInfo?name='
+    if area and area not in ['全国', '中国']:
+        url += 'wuwei_ww_area_counts'
+        r_detail = json.loads(json.loads(requests.get(url).text)['data'])
 
-    return result
+        # 处理省级数据，将省内各市数据加和
+        if area in provinces:
+            result = dict(country='中国', area=area, city='', confirm=0, suspect=0, dead=0, heal=0)
+            for detail in r_detail:
+                if detail['area'] == area:
+                    result['confirm'] += detail['confirm']
+                    result['dead'] += detail['dead']
+                    result['heal'] += detail['heal']
+        for detail in r_detail:
+            if area in [detail['country'], detail['city']]:
+                result = detail
 
-
-async def get_dxy_result(area):
-    """
-    从丁香园html页面中获取数据
-    :param area: 地区名
-    :return: 包含数据的字典或者None
-    """
-
-    result = None
-    url = 'https://3g.dxy.cn/newh5/view/pneumonia?enterid=1579582238'
-    r = requests.get(url)
-    r_bs = BeautifulSoup(str(r.content, 'utf-8'), 'html5lib')
-
-    # 获取省市数据
-    r_area = BeautifulSoup(str(r_bs.find(id='getAreaStat')), 'html5lib')
-    r_area_text = r_area.get_text()[r_area.get_text().find('['):r_area.get_text().rfind(']') + 1]
-    r_area_json = json.loads(r_area_text)
-
-    # 获取其他国家数据
-    r_country = BeautifulSoup(str(r_bs.find(id='getListByCountryTypeService2')), 'html5lib')
-    r_coun_text = r_country.get_text()[r_country.get_text().find('['):r_country.get_text().rfind(']') + 1]
-    r_coun_json = json.loads(r_coun_text)
-
-    for detail in r_area_json:
-        if area in [detail['provinceName'], detail['provinceShortName']]:
-            result = detail
-        elif area in [x['cityName'] for x in detail['cities']]:
-            print(area)
-            for i in range(len(detail['cities'])):
-                city_detail = detail['cities'][i]
-                if area == city_detail['cityName']:
-                    city_detail['provinceName'] = detail['provinceName']
-                    result = city_detail
-
-    # 如果没有在省市数据中找到，查找其他国家数据
-    if not result:
-        for detail_c in r_coun_json:
-            if area in detail_c['provinceName']:
-                result = detail_c
+    else:
+        url += 'wuwei_ww_global_vars'
+        r = requests.get(url)
+        result = json.loads(json.loads(r.text)['data'])[0]
 
     return result
 
 
 async def format_result_tencent(result):
     """
-    将字典处理成字符串
-    :param result: 包含数据的字典
-    :return: 发送给用户的字符串
-    """
-    format_string = ''
-    format_string += '全国 确诊%d例 疑似%d例 治愈%d例 死亡%d例\n\n（全国数据来自腾讯新闻）' % (
-        result['confirmCount'], result['suspectCount'], result['cure'], result['deadCount'])
-
-    return format_string
-
-
-async def format_result_dxy(result):
-    """
         将字典处理成字符串
         :param result: 包含数据的字典
         :return: 发送给用户的字符串
     """
     format_string = ''
-    format_string += '%s' % result['provinceName']
     try:
-        format_string += ' %s' % result['cityName']
+        format_string += '%s' % result['country']
+        format_string += ' %s' % result['area']
+        format_string += ' %s' % result['city']
     except KeyError:
         pass
     finally:
-        format_string += ' 确诊%d例 治愈%d例 死亡%d例\n\n（省市及其他国家数据来自丁香园）' % (
-             result['confirmedCount'], result['curedCount'], result['deadCount'])
+        format_string += ' 确诊%d例 治愈%d例 死亡%d例\n\n（数据来自腾讯网）' % (
+             result['confirm'], result['heal'], result['dead'])
 
     return format_string
+
+
+async def format_result_tencent_cn(result):
+    """
+    将字典处理成字符串
+    :param result: 包含数据的字典
+    :return: 发送给用户的字符串
+    """
+    f_his = json.load(open('./TikoBot_QQ/plugins/his.json', 'r'))
+    yestoday = str((datetime.datetime.today() + datetime.timedelta(-1)).strftime('%m.%d'))
+    his = {'date': yestoday, 'confirm': '0', 'suspect': '0', 'dead': '0', 'heal': '0'}
+    for i in f_his:
+        if i['date'] == yestoday:
+            his = i
+
+    up_confirm = result['confirmCount'] - int(his['confirm'])
+    up_suspect = result['suspectCount'] - int(his['suspect'])
+    up_dead = result['deadCount'] - int(his['dead'])
+    up_heal = result['cure'] - int(his['heal'])
+    up = dict(up_confirm='+' + str(up_confirm) if up_confirm >= 0 else str(up_confirm),
+              up_suspect='+' + str(up_suspect) if up_suspect >= 0 else str(up_suspect),
+              up_dead='+' + str(up_dead) if up_dead >= 0 else str(up_dead),
+              up_heal='+' + str(up_heal) if up_heal >= 0 else str(up_heal),
+              )
+
+    format_string = ''
+    format_string += '全国\n\t确诊%d例（%s）\n\t疑似%d例（%s）\n\t治愈%d例（%s）\n\t死亡%d例（%s）' % (
+        result['confirmCount'], up['up_confirm'], result['suspectCount'], up['up_suspect'],
+        result['cure'], up['up_heal'], result['deadCount'], up['up_dead'])
+
+    return format_string
+
+
+@nonebot.scheduler.scheduled_job('cron', hour='*')
+async def _():
+    """
+    北京时间0点自动更新全国记录文件
+    :return:
+    """
+    now = datetime.datetime.now(pytz.timezone('Asia/Shanghai'))
+    if now.hour == 0:
+        with open('./TikoBot_QQ/plugins/his.json', 'w') as f:
+            url = 'https://view.inews.qq.com/g2/getOnsInfo?name=wuwei_ww_cn_day_counts'
+            r = requests.get(url)
+            r_json = json.loads(r.text)['data']
+            f.write(r_json)
+
