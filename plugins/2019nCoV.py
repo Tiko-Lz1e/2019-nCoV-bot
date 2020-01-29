@@ -43,20 +43,30 @@ async def get_tencent_result(area):
     result = None
     url = 'https://view.inews.qq.com/g2/getOnsInfo?name='
     if area and area not in ['全国', '中国']:
+        url_adds = url + 'wuwei_ww_area_adds'  # 获取新增数据
+        r_adds = json.loads(json.loads(requests.get(url_adds).text)['data'])
+        # print(r_adds)
         url += 'wuwei_ww_area_counts'
         r_detail = json.loads(json.loads(requests.get(url).text)['data'])
 
         # 处理省级数据，将省内各市数据加和
         if area in provinces:
-            result = dict(country='中国', area=area, city='', confirm=0, suspect=0, dead=0, heal=0)
+            result = dict(country='中国', area=area, city='', confirm=0, suspect=0, dead=0, heal=0, confirm_adds=0)
             for detail in r_detail:
                 if detail['area'] == area:
                     result['confirm'] += detail['confirm']
                     result['dead'] += detail['dead']
                     result['heal'] += detail['heal']
+            for adds in r_adds:
+                if adds['area'] == area:
+                    result['confirm_adds'] += adds['confirm']
+
         for detail in r_detail:
             if area in [detail['country'], detail['city']]:
                 result = detail
+        for adds in r_adds:
+            if area in [adds['country'], adds['city']]:
+                result['confirm_adds'] = adds['confirm']
 
     else:
         url += 'wuwei_ww_global_vars'
@@ -79,9 +89,18 @@ async def format_result_tencent(result):
         format_string += ' %s' % result['city']
     except KeyError:
         pass
-    finally:
-        format_string += ' 确诊%d例 治愈%d例 死亡%d例\n\n（数据来自腾讯网）' % (
-             result['confirm'], result['heal'], result['dead'])
+
+    format_string += ' \n\t确诊%d例' % result['confirm']
+
+    try:
+        # 如果用（%s）会使两边的括号消失
+        format_string += '%s' % \
+                         '（' + str(result['confirm_adds']) if result['confirm_adds'] < 0 \
+            else '（+' + str(result['confirm_adds']) + '）'
+    except KeyError:
+        pass
+
+    format_string += '\n\t治愈%d例 \n\t死亡%d例\n\n（数据来自腾讯网）' % (result['heal'], result['dead'])
 
     return format_string
 
@@ -92,6 +111,7 @@ async def format_result_tencent_cn(result):
     :param result: 包含数据的字典
     :return: 发送给用户的字符串
     """
+    # 读取历史记录
     f_his = json.load(open('./TikoBot_QQ/plugins/his.json', 'r'))
     yestoday = str((datetime.datetime.today() + datetime.timedelta(-1)).strftime('%m.%d'))
     his = {'date': yestoday, 'confirm': '0', 'suspect': '0', 'dead': '0', 'heal': '0'}
@@ -99,6 +119,7 @@ async def format_result_tencent_cn(result):
         if i['date'] == yestoday:
             his = i
 
+    # 获取相比前一天变化数据
     up_confirm = result['confirmCount'] - int(his['confirm'])
     up_suspect = result['suspectCount'] - int(his['suspect'])
     up_dead = result['deadCount'] - int(his['dead'])
@@ -121,7 +142,6 @@ async def format_result_tencent_cn(result):
 async def _():
     """
     北京时间0点自动更新全国记录文件
-    :return:
     """
     now = datetime.datetime.now(pytz.timezone('Asia/Shanghai'))
     if now.hour == 0:
