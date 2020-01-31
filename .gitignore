@@ -2,3 +2,7 @@
 __pycache__/
 test.py
 .idea/
+plugins/tuling.py
+plugins/qingyunke.py
+plugins/QQai.py
+config.py

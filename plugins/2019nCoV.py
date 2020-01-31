@@ -19,10 +19,7 @@ async def nCoV(session):
     result = await get_tencent_result(area)  # 全部数据来自腾讯网
 
     if result:
-        if area in ['全国', '中国']:
-            formated_result = await format_result_tencent_cn(result)
-        else:
-            formated_result = await format_result_tencent(result)
+        formated_result = await format_result_tencent(result)
     else:
         formated_result = "未查询到%s的信息" % area
     if formated_result:
@@ -41,37 +38,37 @@ async def _(session: CommandSession):
 
 async def get_tencent_result(area):
     result = None
-    url = 'https://view.inews.qq.com/g2/getOnsInfo?name='
-    if area and area not in ['全国', '中国']:
-        url_adds = url + 'wuwei_ww_area_adds'  # 获取新增数据
-        r_adds = json.loads(json.loads(requests.get(url_adds).text)['data'])
-        # print(r_adds)
-        url += 'wuwei_ww_area_counts'
-        r_detail = json.loads(json.loads(requests.get(url).text)['data'])
+    url = 'https://view.inews.qq.com/g2/getOnsInfo?name=disease_h5'
+    r = requests.get(url).text
+    r_json = json.loads(json.loads(r)['data'])
 
-        # 处理省级数据，将省内各市数据加和
-        if area in provinces:
-            result = dict(country='中国', area=area, city='', confirm=0, suspect=0, dead=0, heal=0, confirm_adds=0)
-            for detail in r_detail:
-                if detail['area'] == area:
-                    result['confirm'] += detail['confirm']
-                    result['dead'] += detail['dead']
-                    result['heal'] += detail['heal']
-            for adds in r_adds:
-                if adds['area'] == area:
-                    result['confirm_adds'] += adds['confirm']
-
-        for detail in r_detail:
-            if area in [detail['country'], detail['city']]:
-                result = detail
-        for adds in r_adds:
-            if area in [adds['country'], adds['city']]:
-                result['confirm_adds'] = adds['confirm']
-
+    if area and area in ['全国', '中国', 'china']:
+        result = r_json['chinaTotal']
+        result['area'] = '全国'
+        result['confirm_adds'] = int(result['confirm']) - int(r_json['chinaDayList'][-1]['confirm'])
     else:
-        url += 'wuwei_ww_global_vars'
-        r = requests.get(url)
-        result = json.loads(json.loads(r.text)['data'])[0]
+        # 其他国家数据
+        for i in range(1, len(r_json['areaTree'])):
+            if area == r_json['areaTree'][i]['name']:
+                result = r_json['areaTree'][i]['total']
+                result['area'] = area
+                result['confirm_adds'] = r_json['areaTree'][i]['today']['confirm']
+
+        if not result:
+            # 省级数据
+            r_tree = r_json['areaTree'][0]['children']
+            for detail_pro in r_tree:
+                if area == detail_pro['name']:
+                    result = detail_pro['total']
+                    result['area'] = area
+                    result['confirm_adds'] = detail_pro['today']['confirm']
+                else:
+                    # 城市数据
+                    for detail_city in detail_pro['children']:
+                        if area == detail_city['name']:
+                            result = detail_city['total']
+                            result['area'] = area
+                            result['confirm_adds'] = detail_city['today']['confirm']
 
     return result
 
@@ -84,70 +81,18 @@ async def format_result_tencent(result):
     """
     format_string = ''
     try:
-        format_string += '%s' % result['country']
         format_string += ' %s' % result['area']
-        format_string += ' %s' % result['city']
-    except KeyError:
+    except KeyError or TypeError:
         pass
-
-    format_string += ' \n\t确诊%d例' % result['confirm']
-
-    try:
-        # 如果用（%s）会使两边的括号消失
-        format_string += '%s' % \
-                         '（' + str(result['confirm_adds']) if result['confirm_adds'] < 0 \
-            else '（+' + str(result['confirm_adds']) + '）'
-    except KeyError:
-        pass
-
-    format_string += '\n\t治愈%d例 \n\t死亡%d例\n\n（数据来自腾讯网）' % (result['heal'], result['dead'])
+    finally:
+        format_string += ' \n\t确诊%d例（%s）' % (int(result['confirm']),
+                                             result['confirm_adds'] if result['confirm_adds'] < 0 else '+' + str(result['confirm_adds']))
+        if result['area'] in ['全国']:
+            format_string += '\n\t疑似%d例' % int(result['suspect'])
+        format_string += '\n\t治愈%d例 \n\t死亡%d例\n\n（数据来自腾讯网）' % (
+             int(result['heal']),
+             int(result['dead']))
 
     return format_string
 
-
-async def format_result_tencent_cn(result):
-    """
-    将字典处理成字符串
-    :param result: 包含数据的字典
-    :return: 发送给用户的字符串
-    """
-    # 读取历史记录
-    f_his = json.load(open('./TikoBot_QQ/plugins/his.json', 'r'))
-    yestoday = str((datetime.datetime.today() + datetime.timedelta(-1)).strftime('%m.%d'))
-    his = {'date': yestoday, 'confirm': '0', 'suspect': '0', 'dead': '0', 'heal': '0'}
-    for i in f_his:
-        if i['date'] == yestoday:
-            his = i
-
-    # 获取相比前一天变化数据
-    up_confirm = result['confirmCount'] - int(his['confirm'])
-    up_suspect = result['suspectCount'] - int(his['suspect'])
-    up_dead = result['deadCount'] - int(his['dead'])
-    up_heal = result['cure'] - int(his['heal'])
-    up = dict(up_confirm='+' + str(up_confirm) if up_confirm >= 0 else str(up_confirm),
-              up_suspect='+' + str(up_suspect) if up_suspect >= 0 else str(up_suspect),
-              up_dead='+' + str(up_dead) if up_dead >= 0 else str(up_dead),
-              up_heal='+' + str(up_heal) if up_heal >= 0 else str(up_heal),
-              )
-
-    format_string = ''
-    format_string += '全国\n\t确诊%d例（%s）\n\t疑似%d例（%s）\n\t治愈%d例（%s）\n\t死亡%d例（%s）' % (
-        result['confirmCount'], up['up_confirm'], result['suspectCount'], up['up_suspect'],
-        result['cure'], up['up_heal'], result['deadCount'], up['up_dead'])
-
-    return format_string
-
-
-@nonebot.scheduler.scheduled_job('cron', hour='*')
-async def _():
-    """
-    北京时间0点自动更新全国记录文件
-    """
-    now = datetime.datetime.now(pytz.timezone('Asia/Shanghai'))
-    if now.hour == 0:
-        with open('./TikoBot_QQ/plugins/his.json', 'w') as f:
-            url = 'https://view.inews.qq.com/g2/getOnsInfo?name=wuwei_ww_cn_day_counts'
-            r = requests.get(url)
-            r_json = json.loads(r.text)['data']
-            f.write(r_json)
 
